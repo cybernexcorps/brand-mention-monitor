@@ -2,6 +2,7 @@
 
 import base64
 import json
+import logging
 import re
 import time
 from urllib.parse import urlparse
@@ -10,6 +11,8 @@ import httpx
 from openai import OpenAI
 
 from config import YC_API_KEY, YC_FOLDER_ID, YANDEX_RATE_LIMIT_SECONDS
+
+logger = logging.getLogger("brand-mention-monitor")
 
 # --- HTTP client ---
 
@@ -20,6 +23,11 @@ _http = httpx.Client(
 
 SEARCH_API_URL = "https://searchapi.api.cloud.yandex.net/v2/web/searchAsync"
 OPERATIONS_URL = "https://operation.api.cloud.yandex.net/operations"
+
+# Retry settings
+_RETRY_STATUSES = {403, 429, 500, 502, 503, 504}
+_MAX_RETRIES = 3
+_BACKOFF_SECONDS = [2, 4, 8]
 
 
 # --- Yandex Search API v2 ---
@@ -32,6 +40,8 @@ def search_web(
     """
     Search Russian web via Yandex Search API v2 (async).
     Returns list of {url, title, snippet, domain} dicts.
+
+    Retries up to 3 times on 403/429/5xx with exponential backoff.
 
     Args:
         query: Search query text
@@ -59,28 +69,61 @@ def search_web(
         "folderId": YC_FOLDER_ID,
     }
 
-    try:
-        # Submit async search
-        resp = _http.post(SEARCH_API_URL, json=body)
-        resp.raise_for_status()
-        operation = resp.json()
-        operation_id = operation["id"]
+    last_error: Exception | None = None
 
-        # Poll for results (max 30 seconds)
-        for _ in range(15):
-            time.sleep(2)
-            poll = _http.get(f"{OPERATIONS_URL}/{operation_id}")
-            poll.raise_for_status()
-            result = poll.json()
-            if result.get("done"):
-                return _parse_search_xml(result, max_results)
+    for attempt in range(_MAX_RETRIES):
+        try:
+            # Submit async search
+            resp = _http.post(SEARCH_API_URL, json=body)
 
-        print(f"[WARN] Search timed out for query: {query}")
-        return []
+            if resp.status_code in _RETRY_STATUSES and attempt < _MAX_RETRIES - 1:
+                wait = _BACKOFF_SECONDS[attempt]
+                logger.warning(
+                    "Search API returned %d for '%s', retrying in %ds (attempt %d/%d)",
+                    resp.status_code, query, wait, attempt + 1, _MAX_RETRIES,
+                )
+                time.sleep(wait)
+                continue
 
-    except Exception as e:
-        print(f"[ERROR] Search failed for '{query}': {e}")
-        return []
+            resp.raise_for_status()
+            operation = resp.json()
+            operation_id = operation["id"]
+            logger.info("Search submitted: operation=%s query='%s'", operation_id, query)
+
+            # Poll for results (max 30 seconds)
+            for _ in range(15):
+                time.sleep(2)
+                poll = _http.get(f"{OPERATIONS_URL}/{operation_id}")
+                poll.raise_for_status()
+                result = poll.json()
+                if result.get("done"):
+                    parsed = _parse_search_xml(result, max_results)
+                    logger.info("Search completed: %d results for '%s'", len(parsed), query)
+                    return parsed
+
+            logger.warning("Search timed out for query: %s", query)
+            return []
+
+        except httpx.HTTPStatusError as e:
+            last_error = e
+            if e.response.status_code in _RETRY_STATUSES and attempt < _MAX_RETRIES - 1:
+                wait = _BACKOFF_SECONDS[attempt]
+                logger.warning(
+                    "Search API HTTP %d for '%s', retrying in %ds (attempt %d/%d)",
+                    e.response.status_code, query, wait, attempt + 1, _MAX_RETRIES,
+                )
+                time.sleep(wait)
+                continue
+            logger.error("Search failed for '%s': %s", query, e)
+            return []
+
+        except Exception as e:
+            last_error = e
+            logger.error("Search failed for '%s': %s", query, e)
+            return []
+
+    logger.error("Search exhausted retries for '%s': %s", query, last_error)
+    return []
 
 
 def _parse_search_xml(operation_result: dict, max_results: int) -> list[dict]:
@@ -137,8 +180,7 @@ def get_llm_client() -> OpenAI:
 
 def classify_relevance(title: str, snippet: str) -> str:
     """
-    Classify whether a search result is a genuine DDVB brand mention
-    (not DDVB's own website or social media).
+    Classify whether a search result is a genuine editorial DDVB brand mention.
     Returns 'relevant' or 'irrelevant'.
     """
     client = get_llm_client()
@@ -149,9 +191,13 @@ def classify_relevance(title: str, snippet: str) -> str:
             "role": "system",
             "content": (
                 "Ты — классификатор медиа-упоминаний бренда DDVB (брендинговое агентство). "
-                "Определи, является ли данный результат поиска СТОРОННИМ упоминанием DDVB "
-                "в СМИ или отраслевом ресурсе (relevant), или это собственный ресурс DDVB "
-                "(сайт ddvb.ru, соцсети, каталог) или нерелевантный результат (irrelevant). "
+                "Определи, является ли результат РЕДАКЦИОННЫМ упоминанием DDVB в СМИ, "
+                "отраслевом портале или бизнес-издании. "
+                "Отвечай relevant ТОЛЬКО если это: статья, новость, кейс, рейтинг, обзор "
+                "или аналитика с упоминанием DDVB. "
+                "Отвечай irrelevant если это: WHOIS/домен-сервис, SEO-анализатор, "
+                "каталог компаний без редакционного контента, агрегатор ссылок, "
+                "поисковая выдача, социальная сеть. "
                 "Ответь одним словом: relevant или irrelevant."
             ),
         },
@@ -166,10 +212,12 @@ def classify_relevance(title: str, snippet: str) -> str:
             max_tokens=10,
         )
         answer = (response.choices[0].message.content or "").strip().lower()
-        return "relevant" if "relevant" in answer else "irrelevant"
+        label = "relevant" if "relevant" in answer else "irrelevant"
+        logger.debug("Classified '%s' as %s", title[:60], label)
+        return label
 
     except Exception as e:
-        print(f"[ERROR] Classification failed: {e}")
+        logger.error("Classification failed: %s", e)
         return "relevant"  # err on side of inclusion
 
 
@@ -195,8 +243,10 @@ def summarize_mention(title: str, snippet: str) -> str:
             temperature=0.3,
             max_tokens=200,
         )
-        return (response.choices[0].message.content or "").strip()
+        summary = (response.choices[0].message.content or "").strip()
+        logger.debug("Summarized mention: '%s'", title[:60])
+        return summary
 
     except Exception as e:
-        print(f"[ERROR] Summarization failed: {e}")
+        logger.error("Summarization failed: %s", e)
         return snippet[:200]
