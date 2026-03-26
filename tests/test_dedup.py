@@ -113,15 +113,15 @@ class TestBlockedDomainFiltering:
         assert len(filtered) == 1
         assert filtered[0]["domain"] == "sostav.ru"
 
-    def test_social_media_blocked(self):
+    def test_social_media_not_blocked(self):
+        """Social media is no longer blanket-blocked — agent classifies contextually."""
         results = [
             {"url": "https://t.me/ddvb_channel", "domain": "t.me", "title": "Telegram"},
             {"url": "https://vk.com/ddvb", "domain": "vk.com", "title": "VK"},
             {"url": "https://retail.ru/news", "domain": "retail.ru", "title": "Good"},
         ]
         filtered = filter_blocked(results)
-        assert len(filtered) == 1
-        assert filtered[0]["domain"] == "retail.ru"
+        assert len(filtered) == 3  # all pass — social media not blocked
 
     def test_whois_seo_tools_blocked(self):
         results = [

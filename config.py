@@ -10,6 +10,12 @@ YC_API_KEY = os.environ["YC_API_KEY"]
 YC_FOLDER_ID = os.environ["YC_FOLDER_ID"]
 YC_BASE_URL = "https://llm.api.cloud.yandex.net/v1"
 
+# Yandex AI Studio (Responses API)
+AI_STUDIO_API_KEY = os.getenv("AI_STUDIO_API_KEY", "")
+AI_STUDIO_BASE_URL = "https://ai.api.cloud.yandex.net/v1"
+AI_STUDIO_PROJECT_ID = "b1g6co0cfokq8k24mu7n"
+AI_STUDIO_AGENT_ID = "fvtv1l3pf21knmsk33to"
+
 # Models
 YANDEX_GPT_LITE = f"gpt://{YC_FOLDER_ID}/yandexgpt-lite/latest"
 YANDEX_GPT_PRO = f"gpt://{YC_FOLDER_ID}/yandexgpt/latest"
@@ -23,16 +29,18 @@ DEFAULT_TARGET_DOMAINS = ["sostav.ru", "retail.ru", "unipack.ru", "new-retail.ru
 DEFAULT_SEARCH_QUERIES = ['"DDVB"', '"ДДВБ"']
 DEFAULT_EXCLUDE_DOMAINS = ["sostav.ru"]
 
+# Search API v2 — improved settings
+SEARCH_RESULTS_PER_PAGE = 50
+SEARCH_DATE_RESTRICT_DAYS = 7
+
 # Rate limiting
 YANDEX_RATE_LIMIT_SECONDS = 1.0  # 1 req/sec for generative mode
 MAX_DOMAINS_PER_BATCH = 5  # allowed_domains limit per call
 
-# Blocked domains — not editorial mentions
+# Blocked domains — never editorial mentions (hard block)
 BLOCKED_DOMAINS = {
     # DDVB own resources
     "ddvb.ru", "www.ddvb.ru", "ddvb.tech", "www.ddvb.tech",
-    # Social media
-    "t.me", "vk.com", "instagram.com", "facebook.com", "twitter.com",
     # Search engines
     "yandex.ru", "google.com", "google.ru",
     # WHOIS / SEO / domain tools
@@ -42,6 +50,12 @@ BLOCKED_DOMAINS = {
     "webarchive.org", "web.archive.org",
     # Generic directories without editorial content
     "catalog.tools",
+}
+
+# Social media — NOT blanket-blocked; agent classifies contextually.
+# Third-party editorial mentions on these platforms are legitimate.
+SOCIAL_MEDIA_DOMAINS = {
+    "t.me", "vk.com", "ok.ru", "instagram.com", "facebook.com", "twitter.com",
 }
 
 # Email (SMTP)

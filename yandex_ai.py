@@ -10,7 +10,7 @@ from urllib.parse import urlparse
 import httpx
 from openai import OpenAI
 
-from config import YC_API_KEY, YC_FOLDER_ID, YANDEX_RATE_LIMIT_SECONDS
+from config import YC_API_KEY, YC_FOLDER_ID, YANDEX_RATE_LIMIT_SECONDS, SEARCH_RESULTS_PER_PAGE
 
 logger = logging.getLogger("brand-mention-monitor")
 
@@ -35,7 +35,8 @@ _BACKOFF_SECONDS = [2, 4, 8]
 def search_web(
     query: str,
     site_filter: list[str] | None = None,
-    max_results: int = 10,
+    max_results: int = 50,
+    date_from: str | None = None,
 ) -> list[dict]:
     """
     Search Russian web via Yandex Search API v2 (async).
@@ -46,13 +47,16 @@ def search_web(
     Args:
         query: Search query text
         site_filter: Optional list of domains to restrict search (e.g. ["retail.ru"])
-        max_results: Max results to return (up to 10 per page)
+        max_results: Max results to return
+        date_from: ISO date string for recency filter (e.g. "2026-03-19")
     """
-    # Build query with site: filter if provided
+    # Build query with site: filter and date restriction
     full_query = query
     if site_filter:
         site_clause = " | ".join(f"site:{d}" for d in site_filter)
         full_query = f"({query}) ({site_clause})"
+    if date_from:
+        full_query = f"{full_query} date:>{date_from.replace('-', '')}"
 
     body = {
         "query": {
@@ -63,6 +67,10 @@ def search_web(
         "sortSpec": {
             "sortMode": "SORT_MODE_BY_RELEVANCE",
             "sortOrder": "SORT_ORDER_DESC",
+        },
+        "groupSpec": {
+            "groupsOnPage": SEARCH_RESULTS_PER_PAGE,
+            "docsInGroup": 1,
         },
         "maxPassages": 2,
         "region": "225",  # Russia

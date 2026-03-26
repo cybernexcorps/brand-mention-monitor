@@ -11,17 +11,22 @@ import time
 if sys.platform == "win32":
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
+from datetime import datetime, timedelta
+
 from config import (
+    AI_STUDIO_API_KEY,
     BLOCKED_DOMAINS,
     DEFAULT_EXCLUDE_DOMAINS,
     DEFAULT_RECIPIENTS,
     DEFAULT_SEARCH_QUERIES,
     DEFAULT_TARGET_DOMAINS,
+    SEARCH_DATE_RESTRICT_DAYS,
     YANDEX_RATE_LIMIT_SECONDS,
 )
 from email_digest import send_digest, send_empty_notification
 from supabase_client import get_existing_urls, load_settings, save_mentions
-from yandex_ai import classify_relevance, search_web, summarize_mention
+from yandex_agent import search_and_classify as agent_search
+from yandex_ai import search_web
 
 logger = logging.getLogger("brand-mention-monitor")
 
@@ -87,81 +92,90 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
     existing_urls = get_existing_urls() if not dry_run else set()
     logger.info("Existing URLs in DB: %d", len(existing_urls))
 
-    # --- 3. Search ---
-    all_results: list[dict] = []
+    # --- 3. AI Studio agent search (primary — search + classify + summarize) ---
+    date_from = (
+        datetime.now() - timedelta(days=SEARCH_DATE_RESTRICT_DAYS)
+    ).strftime("%Y-%m-%d")
+
+    agent_results: list[dict] = []
+    if AI_STUDIO_API_KEY:
+        logger.info("Stage 3: AI Studio agent search (date_from=%s)...", date_from)
+        agent_results = agent_search(search_queries, date_from=date_from)
+        logger.info("Agent found %d pre-classified mentions", len(agent_results))
+    else:
+        logger.warning("AI_STUDIO_API_KEY not set — skipping agent search")
+
+    # --- 4. Search API v2 fallback (breadth — with date filter + pagination) ---
+    logger.info("Stage 4: Search API v2 fallback...")
+    api_results: list[dict] = []
 
     # Batch A: domain-restricted search
-    logger.info("Batch A: searching target domains %s", target_domains)
     for query in search_queries:
         logger.info("  Query: %s on %s", query, target_domains)
-        results = search_web(query, site_filter=target_domains)
+        results = search_web(query, site_filter=target_domains, date_from=date_from)
         for r in results:
             r["discovery_query"] = f"{query} (domain-restricted)"
-        all_results.extend(results)
+            r["discovery_source"] = "yandex_search_api"
+        api_results.extend(results)
         time.sleep(YANDEX_RATE_LIMIT_SECONDS)
 
     # Batch B: broad web search
-    logger.info("Batch B: broad web search")
     for query in search_queries:
         logger.info("  Query: %s (broad)", query)
-        results = search_web(query)
+        results = search_web(query, date_from=date_from)
         for r in results:
             r["discovery_query"] = f"{query} (broad)"
-        all_results.extend(results)
+            r["discovery_source"] = "yandex_search_api"
+        api_results.extend(results)
         time.sleep(YANDEX_RATE_LIMIT_SECONDS)
 
-    total_searched = len(all_results)
-    logger.info("Total raw results: %d", total_searched)
+    logger.info("Search API found %d raw results", len(api_results))
 
-    # --- 4. Deduplicate ---
+    # --- 5. Merge + Deduplicate ---
+    # Agent results first (higher quality — pre-classified with summaries)
+    all_results = agent_results + api_results
+    total_raw = len(all_results)
+    logger.info("Total raw results (agent + API): %d", total_raw)
+
     all_results = deduplicate(all_results, existing_urls)
     after_dedup = len(all_results)
     logger.info("After dedup: %d", after_dedup)
 
-    # --- 5. Filter blocked domains ---
+    # --- 6. Filter blocked domains ---
     all_results = filter_blocked(all_results, exclude_domains)
     after_filter = len(all_results)
     logger.info("After blocked domain filter: %d", after_filter)
 
     if not all_results:
-        logger.info("No new results to classify")
+        logger.info("No new results after filtering")
         if not dry_run:
             send_empty_notification(DEFAULT_RECIPIENTS)
         return {
-            "total_searched": total_searched,
+            "total_raw": total_raw,
+            "agent_found": len(agent_results),
+            "api_found": len(api_results),
             "after_dedup": after_dedup,
             "after_filter": after_filter,
             "relevant": 0,
             "saved": 0,
         }
 
-    # --- 6. Classify relevance ---
-    logger.info("Classifying %d results...", len(all_results))
-    relevant: list[dict] = []
-    for i, r in enumerate(all_results):
-        label = classify_relevance(r["title"], r["snippet"])
-        r["relevance"] = label
-        if label == "relevant":
-            relevant.append(r)
-            logger.info(
-                "  [%d/%d] RELEVANT: %s — %s",
-                i + 1, len(all_results), r["domain"], r["title"][:60],
-            )
-        else:
-            logger.debug(
-                "  [%d/%d] irrelevant: %s — %s",
-                i + 1, len(all_results), r["domain"], r["title"][:60],
-            )
-        time.sleep(YANDEX_RATE_LIMIT_SECONDS)
+    # --- 7. Mark remaining results as relevant ---
+    for r in all_results:
+        r.setdefault("relevance", "relevant")
+        r.setdefault("summary", r.get("snippet", "")[:200])
+        r.setdefault("discovery_source", "yandex_search_api")
 
+    relevant = [r for r in all_results if r["relevance"] == "relevant"]
     logger.info("Relevant mentions: %d / %d", len(relevant), len(all_results))
 
-    # --- 7. Summarize relevant mentions ---
-    if relevant:
-        logger.info("Summarizing %d relevant mentions...", len(relevant))
-        for r in relevant:
-            r["summary"] = summarize_mention(r["title"], r["snippet"])
-            time.sleep(YANDEX_RATE_LIMIT_SECONDS)
+    for r in relevant:
+        logger.info(
+            "  [%s] %s — %s",
+            r.get("discovery_source", "?")[:5],
+            r["domain"],
+            r["title"][:60],
+        )
 
     # --- 8. Save to Supabase ---
     saved = 0
@@ -180,7 +194,9 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
 
     # --- Summary ---
     summary = {
-        "total_searched": total_searched,
+        "total_raw": total_raw,
+        "agent_found": len(agent_results),
+        "api_found": len(api_results),
         "after_dedup": after_dedup,
         "after_filter": after_filter,
         "relevant": len(relevant),
@@ -189,7 +205,9 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
 
     logger.info("=" * 50)
     logger.info("PIPELINE SUMMARY")
-    logger.info("  Total searched:    %d", summary["total_searched"])
+    logger.info("  Agent found:       %d", summary["agent_found"])
+    logger.info("  Search API found:  %d", summary["api_found"])
+    logger.info("  Total raw:         %d", summary["total_raw"])
     logger.info("  After dedup:       %d", summary["after_dedup"])
     logger.info("  After filter:      %d", summary["after_filter"])
     logger.info("  Relevant:          %d", summary["relevant"])
