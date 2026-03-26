@@ -109,8 +109,7 @@ def save_mentions(mentions: list[dict]) -> int:
             "snippet": m.get("snippet", ""),
             "source_domain": m.get("domain", ""),
             "discovery_query": m.get("discovery_query", ""),
-            "relevance_label": m.get("relevance", ""),
-            "summary": m.get("summary", ""),
+            "relevance_label": m.get("relevance", "relevant"),
             "discovery_source": "yandex_search_api",
         })
 
