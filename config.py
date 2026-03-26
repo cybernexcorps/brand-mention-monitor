@@ -8,7 +8,7 @@ load_dotenv()
 # Yandex Cloud
 YC_API_KEY = os.environ["YC_API_KEY"]
 YC_FOLDER_ID = os.environ["YC_FOLDER_ID"]
-YC_BASE_URL = "https://llm.api.cloud.yandex.net/foundationModels/v1"
+YC_BASE_URL = "https://llm.api.cloud.yandex.net/v1"
 
 # Models
 YANDEX_GPT_LITE = f"gpt://{YC_FOLDER_ID}/yandexgpt-lite/latest"

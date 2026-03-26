@@ -1,18 +1,17 @@
 #!/usr/bin/env python3
 """
-PoC: Validate that Yandex AI Studio can discover DDVB brand mentions.
+PoC: Validate that Yandex Search API can discover DDVB brand mentions.
 
 Run: python poc_search.py
-
-Expected output:
-- List of URLs where DDVB is mentioned
-- Relevance classification for each
-- Summary of findings
 """
 
-import asyncio
+import sys
+import io
 import time
 from urllib.parse import urlparse
+
+# Fix Windows encoding for Cyrillic
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 from config import (
     DEFAULT_EXCLUDE_DOMAINS,
@@ -20,24 +19,35 @@ from config import (
     DEFAULT_TARGET_DOMAINS,
     YANDEX_RATE_LIMIT_SECONDS,
 )
-from yandex_ai import classify_relevance, search_with_web
+from yandex_ai import classify_relevance, search_web
+
+
+# Domains that are DDVB's own resources (not third-party mentions)
+OWN_DOMAINS = {
+    "ddvb.ru", "www.ddvb.ru", "ddvb.tech", "www.ddvb.tech",
+    "t.me", "vk.com", "instagram.com",
+    "yandex.ru", "google.com",  # search engine results pages
+}
 
 
 def deduplicate(results: list[dict]) -> list[dict]:
-    """Remove duplicate URLs."""
     seen = set()
     unique = []
     for r in results:
-        url = r["url"].rstrip("/")
+        url = r["url"].rstrip("/").split("?")[0]  # normalize
         if url not in seen:
             seen.add(url)
             unique.append(r)
     return unique
 
 
-def filter_excluded_domains(results: list[dict], exclude: list[str]) -> list[dict]:
-    """Remove results from excluded domains (e.g., the originating publication)."""
-    return [r for r in results if r["domain"] not in exclude]
+def filter_own_and_excluded(results: list[dict], exclude: list[str]) -> list[dict]:
+    """Remove DDVB's own sites and excluded domains."""
+    exclude_set = set(exclude) | OWN_DOMAINS
+    return [
+        r for r in results
+        if r["domain"].replace("www.", "") not in exclude_set
+    ]
 
 
 def main():
@@ -48,46 +58,54 @@ def main():
     all_results = []
 
     # --- Batch A: Domain-restricted search ---
-    print(f"\n📡 Batch A: Searching target domains: {DEFAULT_TARGET_DOMAINS}")
+    print(f"\n📡 Batch A: Target domains: {DEFAULT_TARGET_DOMAINS}")
     for query in DEFAULT_SEARCH_QUERIES:
-        print(f"  Query: {query}")
-        results = search_with_web(query, allowed_domains=DEFAULT_TARGET_DOMAINS)
-        print(f"  Found: {len(results)} results")
+        print(f"  Searching: {query} on {DEFAULT_TARGET_DOMAINS}")
+        results = search_web(query, site_filter=DEFAULT_TARGET_DOMAINS)
+        print(f"  → {len(results)} results")
+        for r in results:
+            r["discovery_query"] = f"{query} (domain-restricted)"
         all_results.extend(results)
         time.sleep(YANDEX_RATE_LIMIT_SECONDS)
 
-    # --- Batch B: Broad search (no domain restriction) ---
+    # --- Batch B: Broad search ---
     print(f"\n🌐 Batch B: Broad web search")
     for query in DEFAULT_SEARCH_QUERIES:
-        print(f"  Query: {query}")
-        results = search_with_web(query)
-        print(f"  Found: {len(results)} results")
+        print(f"  Searching: {query} (all web)")
+        results = search_web(query)
+        print(f"  → {len(results)} results")
+        for r in results:
+            r["discovery_query"] = f"{query} (broad)"
         all_results.extend(results)
         time.sleep(YANDEX_RATE_LIMIT_SECONDS)
 
     # --- Deduplicate ---
-    before_dedup = len(all_results)
+    before = len(all_results)
     all_results = deduplicate(all_results)
-    print(f"\n🔄 Deduplicated: {before_dedup} → {len(all_results)}")
+    print(f"\n🔄 Deduplicated: {before} → {len(all_results)}")
 
-    # --- Filter excluded domains ---
-    before_filter = len(all_results)
-    all_results = filter_excluded_domains(all_results, DEFAULT_EXCLUDE_DOMAINS)
-    print(f"🚫 Filtered excluded domains: {before_filter} → {len(all_results)}")
+    # --- Filter own + excluded domains ---
+    before = len(all_results)
+    all_results = filter_own_and_excluded(all_results, DEFAULT_EXCLUDE_DOMAINS)
+    print(f"🚫 Filtered own/excluded: {before} → {len(all_results)}")
 
     if not all_results:
-        print("\n⚠️  No results found. Check API key and search queries.")
+        print("\n⚠️  No third-party results found.")
         return
 
+    # --- Print all results before classification ---
+    print(f"\n📋 Results to classify ({len(all_results)}):")
+    for i, r in enumerate(all_results):
+        print(f"  [{i+1}] {r['domain']}: {r['title'][:70]}")
+
     # --- Classify relevance ---
-    print(f"\n🏷️  Classifying relevance ({len(all_results)} items)...")
+    print(f"\n🏷️  Classifying relevance...")
     relevant = []
     for i, r in enumerate(all_results):
-        text = f"{r['title']} {r['snippet']}"
-        label = classify_relevance(text)
+        label = classify_relevance(r["title"], r["snippet"])
         r["relevance"] = label
-        status = "✅" if label == "relevant" else "❌"
-        print(f"  [{i+1}/{len(all_results)}] {status} {r['domain']}: {r['title'][:60]}")
+        icon = "✅" if label == "relevant" else "❌"
+        print(f"  [{i+1}/{len(all_results)}] {icon} {r['domain']}: {r['title'][:60]}")
         if label == "relevant":
             relevant.append(r)
         time.sleep(YANDEX_RATE_LIMIT_SECONDS)
@@ -101,19 +119,20 @@ def main():
     print("=" * 60)
 
     if relevant:
-        print("\n✅ RELEVANT MENTIONS:")
+        print("\n✅ RELEVANT THIRD-PARTY MENTIONS:")
         for r in relevant:
             print(f"\n  📰 {r['title']}")
             print(f"     URL:    {r['url']}")
             print(f"     Domain: {r['domain']}")
-            print(f"     Query:  {r['discovery_query']}")
-            if r['snippet']:
-                print(f"     Snippet: {r['snippet'][:150]}...")
+            print(f"     Query:  {r.get('discovery_query', '?')}")
+            if r["snippet"]:
+                print(f"     Snippet: {r['snippet'][:200]}")
 
-    # --- Domains breakdown ---
+    # Domain breakdown
     domains = {}
     for r in relevant:
-        domains[r["domain"]] = domains.get(r["domain"], 0) + 1
+        d = r["domain"]
+        domains[d] = domains.get(d, 0) + 1
     if domains:
         print("\n📊 DOMAIN BREAKDOWN:")
         for domain, count in sorted(domains.items(), key=lambda x: -x[1]):
