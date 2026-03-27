@@ -14,6 +14,7 @@ from config import (
     AI_STUDIO_BASE_URL,
     AI_STUDIO_PROJECT_ID,
     AI_STUDIO_AGENT_ID,
+    YC_FOLDER_ID,
 )
 
 logger = logging.getLogger("brand-mention-monitor")
@@ -54,18 +55,41 @@ def search_and_classify(
     client = get_agent_client()
     message = _build_agent_input(brand_queries, date_from)
 
+    model_uri = f"gpt://{YC_FOLDER_ID}/alice-ai-llm/latest"
+
     for attempt in range(_MAX_RETRIES + 1):
         try:
             logger.info(
                 "AI Studio agent call (attempt %d/%d)...",
                 attempt + 1, _MAX_RETRIES + 1,
             )
-            response = client.responses.create(
-                prompt={"id": AI_STUDIO_AGENT_ID},
-                input=message,
-            )
 
+            # Try prompt-based call first (pre-configured agent with WebSearch)
+            # Falls back to direct model call if agent not accessible
+            try:
+                response = client.responses.create(
+                    prompt={"id": AI_STUDIO_AGENT_ID},
+                    input=message,
+                )
+            except Exception as prompt_err:
+                logger.warning(
+                    "Prompt-based agent not accessible (%s), using direct model call",
+                    prompt_err,
+                )
+                response = client.responses.create(
+                    model=model_uri,
+                    input=message,
+                )
+
+            status = getattr(response, "status", "unknown")
             output = response.output_text or ""
+
+            if status == "failed" or not output:
+                logger.warning("Agent returned status=%s, empty output", status)
+                if attempt < _MAX_RETRIES:
+                    time.sleep(_BACKOFF_SECONDS)
+                    continue
+                return []
             logger.debug("Agent response length: %d chars", len(output))
 
             mentions = _parse_agent_response(output)
