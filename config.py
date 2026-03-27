@@ -50,7 +50,9 @@ BLOCKED_DOMAINS = {
     # Classifieds / car parts — "DDVB" is a VAG engine code, not the agency
     "avito.ru", "auto.ru", "drom.ru", "baza.drom.ru", "farpost.ru",
     "arpshop.ru", "avdauto.com", "autocompas.ru", "vodila.by", "zap.by",
-    "partsouq.com", "hepsiburada.com", "newpartsricambi.com",
+    "partsouq.com", "hepsiburada.com", "newpartsricambi.com", "dviglo.by",
+    # Yandex aggregator pages
+    "tel.yandex.by", "tel.yandex.ru",
     # Spam / unrelated content / foreign sites with "DDVB" as random string
     "javip.net", "eporner.dgav14.com", "obdrgg.cn", "pbmgo.cq17u.com",
     "1doz8.atlantafigures.org", "post.rlsbb.cc", "qodov.clixi.ru",
