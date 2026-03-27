@@ -68,8 +68,11 @@ def search_and_classify(
 
                 prompt = (
                     f"Найди все упоминания бренда {query} "
-                    f"(DDVB — брендинговое агентство, Москва) "
+                    f"(DDVB — брендинговое агентство полного цикла, Москва, "
+                    f"специализация: стратегия бренда, дизайн упаковки, айдентика, нейминг) "
                     f"в российских онлайн-СМИ, отраслевых порталах и бизнес-изданиях. "
+                    f"ВАЖНО: DDVB — это именно брендинговое агентство, а НЕ маркировка "
+                    f"автомобильных двигателей VAG/Audi. Игнорируй автозапчасти. "
                     f"Перечисли все найденные статьи с заголовками и URL."
                 )
 
@@ -83,6 +86,7 @@ def search_and_classify(
                     len(sources), query,
                 )
 
+                used_count = 0
                 for source in sources:
                     url = getattr(source, "url", "")
                     title = getattr(source, "title", "")
@@ -91,6 +95,13 @@ def search_and_classify(
                     if not url:
                         continue
 
+                    # Only include sources the AI actually cited about DDVB.
+                    # Unused sources are tangential context, often unrelated.
+                    if not used:
+                        logger.debug("Skipping unused source: %s", url)
+                        continue
+
+                    used_count += 1
                     domain = urlparse(url).netloc.replace("www.", "")
 
                     all_mentions.append({
@@ -98,11 +109,16 @@ def search_and_classify(
                         "title": title,
                         "domain": domain,
                         "snippet": "",
-                        "summary": summary_text[:200] if used else "",
+                        "summary": summary_text[:200],
                         "relevance": "relevant",
                         "discovery_query": f"{query} (generative-search)",
                         "discovery_source": "ai_studio_generative",
                     })
+
+                logger.info(
+                    "  %d used / %d total sources for %s",
+                    used_count, len(sources), query,
+                )
 
                 break  # Success — exit retry loop
 

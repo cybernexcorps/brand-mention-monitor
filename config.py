@@ -47,6 +47,19 @@ BLOCKED_DOMAINS = {
     "webarchive.org", "web.archive.org",
     # Generic directories without editorial content
     "catalog.tools",
+    # Classifieds / car parts — "DDVB" is a VAG engine code, not the agency
+    "avito.ru", "auto.ru", "drom.ru", "baza.drom.ru", "farpost.ru",
+    "arpshop.ru", "avdauto.com", "autocompas.ru", "vodila.by", "zap.by",
+    "partsouq.com", "hepsiburada.com", "newpartsricambi.com",
+    # Spam / unrelated content / foreign sites with "DDVB" as random string
+    "javip.net", "eporner.dgav14.com", "obdrgg.cn", "pbmgo.cq17u.com",
+    "1doz8.atlantafigures.org", "post.rlsbb.cc", "qodov.clixi.ru",
+    "log1.2chb.net", "worldwebwar.ru", "ongaku.one",
+    "lichess.org", "wolf-power.ch", "blockchain.com", "kolhosniki.ru",
+    "boovell.ru", "p3-tt.byteimg.com", "bog2.obraz-tmr.ru",
+    "gist.github.com", "github.com",
+    "shedevrum.ai", "learnsanskrit.ru", "fias.alta.ru",
+    "reiting.ex-u.ru", "aviso.bz", "rutube.ru",
 }
 
 # Social media — NOT blanket-blocked; agent classifies contextually.

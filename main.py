@@ -25,7 +25,7 @@ from config import (
 from email_digest import send_digest, send_empty_notification
 from supabase_client import get_existing_urls, load_settings, save_mentions
 from yandex_agent import search_and_classify as agent_search
-from yandex_ai import search_web
+from yandex_ai import classify_relevance, search_web
 
 logger = logging.getLogger("brand-mention-monitor")
 
@@ -101,11 +101,18 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
     logger.info("Generative search found %d mentions", len(agent_results))
 
     # --- 4. Search API v2 fallback (breadth — with date filter + pagination) ---
-    logger.info("Stage 4: Search API v2 fallback...")
+    # Only use Latin "DDVB" for Search API — the Cyrillic "ДДВБ" query matches
+    # VAG engine codes and random text fragments, producing massive noise.
+    # Generative search (stage 3) handles "ДДВБ" well because the AI filters contextually.
+    api_queries = [q for q in search_queries if "ДДВБ" not in q]
+    if not api_queries:
+        api_queries = ['"DDVB"']  # Always have at least one query
+
+    logger.info("Stage 4: Search API v2 fallback (queries: %s)...", api_queries)
     api_results: list[dict] = []
 
     # Batch A: domain-restricted search
-    for query in search_queries:
+    for query in api_queries:
         logger.info("  Query: %s on %s", query, target_domains)
         results = search_web(query, site_filter=target_domains, date_from=date_from)
         for r in results:
@@ -115,7 +122,7 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
         time.sleep(YANDEX_RATE_LIMIT_SECONDS)
 
     # Batch B: broad web search
-    for query in search_queries:
+    for query in api_queries:
         logger.info("  Query: %s (broad)", query)
         results = search_web(query, date_from=date_from)
         for r in results:
@@ -155,13 +162,31 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
             "saved": 0,
         }
 
-    # --- 7. Mark remaining results as relevant ---
+    # --- 7. Classify Search API results with YandexGPT ---
+    # Generative search results are already pre-classified (high quality).
+    # Search API results need AI classification to filter noise
+    # (e.g., "DDVB" matching car engine codes, random string fragments).
+    logger.info("Classifying Search API results...")
+    relevant: list[dict] = []
     for r in all_results:
-        r.setdefault("relevance", "relevant")
-        r.setdefault("summary", r.get("snippet", "")[:200])
         r.setdefault("discovery_source", "yandex_search_api")
+        r.setdefault("summary", r.get("snippet", "")[:200])
 
-    relevant = [r for r in all_results if r["relevance"] == "relevant"]
+        if r.get("discovery_source") == "ai_studio_generative":
+            # Already classified by generative search AI
+            r["relevance"] = "relevant"
+            relevant.append(r)
+        else:
+            # Classify with YandexGPT Lite
+            label = classify_relevance(r["title"], r["snippet"])
+            r["relevance"] = label
+            if label == "relevant":
+                relevant.append(r)
+                logger.info("  RELEVANT: %s — %s", r["domain"], r["title"][:60])
+            else:
+                logger.debug("  irrelevant: %s — %s", r["domain"], r["title"][:60])
+            time.sleep(YANDEX_RATE_LIMIT_SECONDS)
+
     logger.info("Relevant mentions: %d / %d", len(relevant), len(all_results))
 
     for r in relevant:
