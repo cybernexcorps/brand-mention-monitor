@@ -200,11 +200,26 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
             "saved": 0,
         }
 
-    # --- 7. Classify Search API results with YandexGPT ---
-    # Generative search results are already pre-classified (high quality).
-    # Search API results need AI classification to filter noise
-    # (e.g., "DDVB" matching car engine codes, random string fragments).
-    logger.info("Classifying Search API results...")
+    # --- 7. Hard gate: DDVB must appear in title or snippet ---
+    # This is the most reliable filter — if the brand name isn't in the text,
+    # it's not a brand mention regardless of what the AI classifier says.
+    brand_terms = {"ddvb", "ддвб"}
+    before_brand_gate = len(all_results)
+    brand_gated = []
+    for r in all_results:
+        text = f"{r.get('title', '')} {r.get('snippet', '')}".lower()
+        if any(term in text for term in brand_terms):
+            brand_gated.append(r)
+        else:
+            logger.debug("Brand gate rejected: %s — %s", r["domain"], r["title"][:60])
+    all_results = brand_gated
+    logger.info(
+        "After brand gate: %d (rejected %d without DDVB in text)",
+        len(all_results), before_brand_gate - len(all_results),
+    )
+
+    # --- 8. Classify remaining Search API results with YandexGPT ---
+    logger.info("Classifying %d results...", len(all_results))
     relevant: list[dict] = []
     for r in all_results:
         r.setdefault("discovery_source", "yandex_search_api")
