@@ -61,7 +61,7 @@ BLOCKED_DOMAINS = {
     "boovell.ru", "p3-tt.byteimg.com", "bog2.obraz-tmr.ru",
     "gist.github.com", "github.com",
     "shedevrum.ai", "learnsanskrit.ru", "fias.alta.ru",
-    "reiting.ex-u.ru", "aviso.bz", "rutube.ru",
+    "reiting.ex-u.ru", "aviso.bz", "rutube.ru", "rawbare.com",
     "report-abuse.com", "zavpro.travyanov.ru",
     # Visual/social platforms — show other agencies, not DDVB-specific editorial
     "ru.pinterest.com", "pinterest.com",
