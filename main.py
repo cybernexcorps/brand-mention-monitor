@@ -56,13 +56,28 @@ def deduplicate(results: list[dict], existing_urls: set[str]) -> list[dict]:
     return unique
 
 
+# TLDs that can contain DDVB editorial mentions (Russian-language media)
+ALLOWED_TLDS = {
+    "ru", "su", "by", "kz", "uz", "ua", "me", "com", "net", "org",
+    "io", "info", "agency", "tech", "asia", "pro", "one", "app",
+}
+
+
 def filter_blocked(results: list[dict], exclude_domains: list[str]) -> list[dict]:
-    """Remove blocked domains and explicitly excluded domains."""
+    """Remove blocked domains, excluded domains, and non-Russian TLDs."""
     exclude_set = BLOCKED_DOMAINS | set(exclude_domains)
-    return [
-        r for r in results
-        if r["domain"].replace("www.", "") not in exclude_set
-    ]
+    filtered = []
+    for r in results:
+        domain = r["domain"].replace("www.", "")
+        if domain in exclude_set:
+            continue
+        # Block foreign TLDs — DDVB mentions only appear on Russian-zone sites
+        tld = domain.rsplit(".", 1)[-1] if "." in domain else ""
+        if tld not in ALLOWED_TLDS:
+            logger.debug("Blocked foreign TLD: %s", domain)
+            continue
+        filtered.append(r)
+    return filtered
 
 
 # ---------------------------------------------------------------------------
