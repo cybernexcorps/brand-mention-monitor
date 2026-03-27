@@ -65,7 +65,7 @@ def search_web(
             "familyMode": "FAMILY_MODE_NONE",
         },
         "sortSpec": {
-            "sortMode": "SORT_MODE_BY_RELEVANCE",
+            "sortMode": "SORT_MODE_BY_TIME",
             "sortOrder": "SORT_ORDER_DESC",
         },
         "groupSpec": {
@@ -76,6 +76,9 @@ def search_web(
         "region": "225",  # Russia
         "folderId": YC_FOLDER_ID,
     }
+    # Native Yandex date filter — more reliable than date: operator in query
+    if date_from:
+        body["period"] = "PERIOD_2_WEEKS"
 
     last_error: Exception | None = None
 
@@ -151,6 +154,7 @@ def _parse_search_xml(operation_result: dict, max_results: int) -> list[dict]:
         title_match = re.search(r"<title>(.*?)</title>", group)
         domain_match = re.search(r"<domain>(.*?)</domain>", group)
         passage_matches = re.findall(r"<passage>(.*?)</passage>", group)
+        modtime_match = re.search(r'modtime="(\d{8})T', group)
 
         if not url_match:
             continue
@@ -159,11 +163,14 @@ def _parse_search_xml(operation_result: dict, max_results: int) -> list[dict]:
         title = _clean_html(title_match.group(1)) if title_match else ""
         domain = domain_match.group(1).replace("www.", "") if domain_match else urlparse(url).netloc
         snippet = " ".join(_clean_html(p) for p in passage_matches[:2])
+        # modtime format: YYYYMMDDTHHMMSS — extract date part
+        modtime = modtime_match.group(1) if modtime_match else ""
 
         results.append({
             "url": url,
             "title": title,
             "snippet": snippet,
+            "modtime": modtime,
             "domain": domain,
         })
 
@@ -198,19 +205,22 @@ def classify_relevance(title: str, snippet: str) -> str:
         {
             "role": "system",
             "content": (
-                "Ты — строгий классификатор медиа-упоминаний бренда DDVB "
+                "Ты — строгий классификатор упоминаний бренда DDVB "
                 "(брендинговое агентство полного цикла из Москвы). "
-                "Определи, ЯВНО ли упоминается именно агентство DDVB в заголовке или описании. "
-                "Отвечай relevant ТОЛЬКО если слово DDVB или ДДВБ ЯВНО присутствует "
-                "в заголовке или описании И речь идёт о брендинговом агентстве, "
-                "его проектах, сотрудниках или клиентах. "
-                "Отвечай irrelevant если: "
-                "1) DDVB НЕ упоминается явно в тексте; "
-                "2) страница о другой компании/агентстве (даже если тема — брендинг); "
-                "3) DDVB — это маркировка двигателя/запчасти VAG/Audi; "
-                "4) это каталог, агрегатор, портфолио-платформа без конкретного кейса DDVB; "
-                "5) WHOIS, SEO-инструмент, поисковая выдача. "
-                "Ответь одним словом: relevant или irrelevant."
+                "DDVB специализируется на стратегии бренда, дизайне упаковки, айдентике. "
+                "Отвечай relevant ТОЛЬКО если ВСЕ условия выполнены: "
+                "1) Слово 'DDVB' или 'ДДВБ' ЯВНО присутствует в заголовке или описании; "
+                "2) Речь идёт именно о брендинговом агентстве DDVB, его проектах, "
+                "сотрудниках (Мария Архангельская, Леонид Фейгин) или клиентах; "
+                "3) Это НОВОСТЬ, СТАТЬЯ, КЕЙС или РЕЙТИНГ текущего года (2026). "
+                "Отвечай irrelevant если ЛЮБОЕ из: "
+                "- DDVB НЕ упоминается явно в тексте (просто тема 'брендинг' недостаточно); "
+                "- Страница о ДРУГОЙ компании (даже если тема — брендинг/дизайн); "
+                "- DDVB — это маркировка двигателя VAG/Audi (автозапчасти); "
+                "- Это каталог, агрегатор, список ссылок без редакционного контента; "
+                "- DDVB упоминается только в боковой панели, футере или списке 'похожие'; "
+                "- Публикация явно старая (2024 год и ранее). "
+                "Ответь ОДНИМ словом: relevant или irrelevant."
             ),
         },
         {"role": "user", "content": text[:1000]},

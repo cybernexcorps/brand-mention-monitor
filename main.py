@@ -148,7 +148,7 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
 
     logger.info("Search API found %d raw results", len(api_results))
 
-    # --- 5. Merge + Deduplicate ---
+    # --- 5. Merge + Deduplicate + Date validation ---
     # Agent results first (higher quality — pre-classified with summaries)
     all_results = agent_results + api_results
     total_raw = len(all_results)
@@ -157,6 +157,29 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
     all_results = deduplicate(all_results, existing_urls)
     after_dedup = len(all_results)
     logger.info("After dedup: %d", after_dedup)
+
+    # Filter by publication date — reject anything older than search window
+    date_from_int = int(date_from.replace("-", ""))  # e.g. 20260320
+    before_date_filter = len(all_results)
+    date_filtered = []
+    for r in all_results:
+        modtime = r.get("modtime", "")
+        if modtime and len(modtime) == 8:
+            try:
+                if int(modtime) < date_from_int:
+                    logger.debug(
+                        "Rejected old content (modtime=%s): %s",
+                        modtime, r.get("title", "")[:60],
+                    )
+                    continue
+            except ValueError:
+                pass
+        date_filtered.append(r)
+    all_results = date_filtered
+    logger.info(
+        "After date filter: %d (rejected %d old)",
+        len(all_results), before_date_filter - len(all_results),
+    )
 
     # --- 6. Filter blocked domains ---
     all_results = filter_blocked(all_results, exclude_domains)
