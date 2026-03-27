@@ -60,6 +60,9 @@ BLOCKED_DOMAINS = {
     "gist.github.com", "github.com",
     "shedevrum.ai", "learnsanskrit.ru", "fias.alta.ru",
     "reiting.ex-u.ru", "aviso.bz", "rutube.ru",
+    "report-abuse.com", "zavpro.travyanov.ru",
+    # Visual/social platforms — show other agencies, not DDVB-specific editorial
+    "ru.pinterest.com", "pinterest.com",
 }
 
 # Social media — NOT blanket-blocked; agent classifies contextually.
