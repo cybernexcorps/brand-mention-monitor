@@ -5,6 +5,7 @@ import sys
 import io
 import argparse
 import logging
+import re
 import time
 
 # Windows UTF-8 stdout fix
@@ -33,6 +34,36 @@ logger = logging.getLogger("brand-mention-monitor")
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# Year extraction patterns for publication date heuristics
+_URL_DATE_PATTERNS = [
+    re.compile(r'/(\d{4})/\d{1,2}/'),       # /2024/08/
+    re.compile(r'/(\d{4})-\d{2}'),           # /2024-03-26
+    re.compile(r'[/-](\d{4})[/-]'),          # generic /2024/ or -2024-
+]
+_TEXT_YEAR_PATTERN = re.compile(r'\b(20[12]\d)\b')  # matches 2010-2029
+
+
+def _extract_publication_year(url: str, title: str, snippet: str) -> int | None:
+    """Extract publication year from URL path or title/snippet text."""
+    current_year = datetime.now().year
+
+    # Check URL first (most reliable — news sites embed dates in paths)
+    for pattern in _URL_DATE_PATTERNS:
+        match = pattern.search(url)
+        if match:
+            year = int(match.group(1))
+            if 2010 <= year <= current_year:
+                return year
+
+    # Check title and snippet for year mentions
+    text = f"{title} {snippet}"
+    years = [int(y) for y in _TEXT_YEAR_PATTERN.findall(text) if 2010 <= int(y) <= current_year]
+    if years:
+        return max(years)  # most recent year mentioned
+
+    return None
+
 
 def _normalize_url(url: str) -> str:
     """Normalize URL for deduplication: strip trailing slash, query params, www."""
@@ -148,7 +179,7 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
 
     logger.info("Search API found %d raw results", len(api_results))
 
-    # --- 5. Merge + Deduplicate + Date validation ---
+    # --- 5. Merge + Deduplicate ---
     # Agent results first (higher quality — pre-classified with summaries)
     all_results = agent_results + api_results
     total_raw = len(all_results)
@@ -157,29 +188,6 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
     all_results = deduplicate(all_results, existing_urls)
     after_dedup = len(all_results)
     logger.info("After dedup: %d", after_dedup)
-
-    # Filter by publication date — reject anything older than search window
-    date_from_int = int(date_from.replace("-", ""))  # e.g. 20260320
-    before_date_filter = len(all_results)
-    date_filtered = []
-    for r in all_results:
-        modtime = r.get("modtime", "")
-        if modtime and len(modtime) == 8:
-            try:
-                if int(modtime) < date_from_int:
-                    logger.debug(
-                        "Rejected old content (modtime=%s): %s",
-                        modtime, r.get("title", "")[:60],
-                    )
-                    continue
-            except ValueError:
-                pass
-        date_filtered.append(r)
-    all_results = date_filtered
-    logger.info(
-        "After date filter: %d (rejected %d old)",
-        len(all_results), before_date_filter - len(all_results),
-    )
 
     # --- 6. Filter blocked domains ---
     all_results = filter_blocked(all_results, exclude_domains)
@@ -218,7 +226,28 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
         len(all_results), before_brand_gate - len(all_results),
     )
 
-    # --- 8. Classify remaining Search API results with YandexGPT ---
+    # --- 8. Year filter: reject content from previous years ---
+    current_year = datetime.now().year
+    before_year_filter = len(all_results)
+    year_filtered = []
+    for r in all_results:
+        year = _extract_publication_year(
+            r.get("url", ""), r.get("title", ""), r.get("snippet", ""),
+        )
+        if year is not None and year < current_year:
+            logger.info(
+                "Rejected old content (year=%d): %s — %s",
+                year, r["domain"], r["title"][:60],
+            )
+            continue
+        year_filtered.append(r)
+    all_results = year_filtered
+    logger.info(
+        "After year filter: %d (rejected %d old)",
+        len(all_results), before_year_filter - len(all_results),
+    )
+
+    # --- 9. Classify remaining Search API results with YandexGPT ---
     logger.info("Classifying %d results...", len(all_results))
     relevant: list[dict] = []
     for r in all_results:
