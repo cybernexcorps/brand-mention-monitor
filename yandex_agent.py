@@ -1,20 +1,15 @@
-"""Yandex AI Studio Responses API client — WebSearch-based brand mention discovery."""
+"""Yandex AI Studio SDK — generative search for brand mention discovery."""
 
-import json
 import logging
-import re
 import time
-from datetime import datetime, timedelta
 from urllib.parse import urlparse
 
-from openai import OpenAI
+from yandex_ai_studio_sdk import AIStudio
 
 from config import (
-    AI_STUDIO_API_KEY,
-    AI_STUDIO_BASE_URL,
-    AI_STUDIO_PROJECT_ID,
-    AI_STUDIO_AGENT_ID,
+    YC_API_KEY,
     YC_FOLDER_ID,
+    DEFAULT_SEARCH_QUERIES,
 )
 
 logger = logging.getLogger("brand-mention-monitor")
@@ -23,13 +18,9 @@ _MAX_RETRIES = 2
 _BACKOFF_SECONDS = 3
 
 
-def get_agent_client() -> OpenAI:
-    """Create AI Studio client (OpenAI-compatible Responses API)."""
-    return OpenAI(
-        api_key=AI_STUDIO_API_KEY,
-        base_url=AI_STUDIO_BASE_URL,
-        project=AI_STUDIO_PROJECT_ID,
-    )
+def _get_sdk() -> AIStudio:
+    """Create AI Studio SDK client."""
+    return AIStudio(folder_id=YC_FOLDER_ID, auth=YC_API_KEY)
 
 
 def search_and_classify(
@@ -37,8 +28,11 @@ def search_and_classify(
     date_from: str | None = None,
 ) -> list[dict]:
     """
-    Call AI Studio agent with WebSearch to discover, classify, and summarize
-    brand mentions in a single API call.
+    Use Yandex AI Studio generative search to discover brand mentions.
+
+    Generative search combines Yandex Search + AI analysis in a single call:
+    the model searches the web, reads full page content, and returns an
+    AI-synthesized answer with source URLs.
 
     Args:
         brand_queries: Brand name variants, e.g. ['"DDVB"', '"ДДВБ"']
@@ -48,186 +42,81 @@ def search_and_classify(
         List of mention dicts: {url, title, domain, snippet, summary,
         relevance, discovery_query, discovery_source}
     """
-    if not AI_STUDIO_API_KEY:
-        logger.warning("AI_STUDIO_API_KEY not set — skipping agent search")
+    if not YC_API_KEY:
+        logger.warning("YC_API_KEY not set — skipping generative search")
         return []
 
-    client = get_agent_client()
-    message = _build_agent_input(brand_queries, date_from)
+    sdk = _get_sdk()
+    all_mentions: list[dict] = []
 
-    model_uri = f"gpt://{YC_FOLDER_ID}/alice-ai-llm/latest"
+    # Build search filters
+    search_filters = []
+    if date_from:
+        search_filters.append({"date": f">{date_from.replace('-', '')}"})
 
-    for attempt in range(_MAX_RETRIES + 1):
-        try:
-            logger.info(
-                "AI Studio agent call (attempt %d/%d)...",
-                attempt + 1, _MAX_RETRIES + 1,
-            )
-
-            # Try prompt-based call first (pre-configured agent with WebSearch)
-            # Falls back to direct model call if agent not accessible
+    for query in brand_queries:
+        for attempt in range(_MAX_RETRIES + 1):
             try:
-                response = client.responses.create(
-                    prompt={"id": AI_STUDIO_AGENT_ID},
-                    input=message,
-                )
-            except Exception as prompt_err:
-                logger.warning(
-                    "Prompt-based agent not accessible (%s), using direct model call",
-                    prompt_err,
-                )
-                response = client.responses.create(
-                    model=model_uri,
-                    input=message,
+                logger.info(
+                    "Generative search: query=%s (attempt %d/%d)",
+                    query, attempt + 1, _MAX_RETRIES + 1,
                 )
 
-            status = getattr(response, "status", "unknown")
-            output = response.output_text or ""
+                search = sdk.search_api.generative(
+                    search_filters=search_filters if search_filters else None,
+                )
 
-            if status == "failed" or not output:
-                logger.warning("Agent returned status=%s, empty output", status)
+                prompt = (
+                    f"Найди все упоминания бренда {query} "
+                    f"(DDVB — брендинговое агентство, Москва) "
+                    f"в российских онлайн-СМИ, отраслевых порталах и бизнес-изданиях. "
+                    f"Перечисли все найденные статьи с заголовками и URL."
+                )
+
+                result = search.run(prompt, timeout=120)
+
+                summary_text = result.text or ""
+                sources = result.sources or []
+
+                logger.info(
+                    "Generative search returned %d sources for %s",
+                    len(sources), query,
+                )
+
+                for source in sources:
+                    url = getattr(source, "url", "")
+                    title = getattr(source, "title", "")
+                    used = getattr(source, "used", False)
+
+                    if not url:
+                        continue
+
+                    domain = urlparse(url).netloc.replace("www.", "")
+
+                    all_mentions.append({
+                        "url": url,
+                        "title": title,
+                        "domain": domain,
+                        "snippet": "",
+                        "summary": summary_text[:200] if used else "",
+                        "relevance": "relevant",
+                        "discovery_query": f"{query} (generative-search)",
+                        "discovery_source": "ai_studio_generative",
+                    })
+
+                break  # Success — exit retry loop
+
+            except Exception as e:
+                logger.error(
+                    "Generative search failed for %s (attempt %d): %s",
+                    query, attempt + 1, e,
+                )
                 if attempt < _MAX_RETRIES:
                     time.sleep(_BACKOFF_SECONDS)
-                    continue
-                return []
-            logger.debug("Agent response length: %d chars", len(output))
+                else:
+                    logger.error("Exhausted retries for query %s", query)
 
-            mentions = _parse_agent_response(output)
+        time.sleep(1)  # Rate limit between queries
 
-            # Tag each mention with discovery metadata
-            for m in mentions:
-                m.setdefault("relevance", "relevant")
-                m.setdefault("discovery_query", "ai_studio_agent")
-                m.setdefault("discovery_source", "ai_studio_agent")
-                # Ensure domain is set
-                if not m.get("domain") and m.get("url"):
-                    m["domain"] = urlparse(m["url"]).netloc.replace("www.", "")
-
-            logger.info("Agent found %d pre-classified mentions", len(mentions))
-            return mentions
-
-        except Exception as e:
-            logger.error("Agent call failed (attempt %d): %s", attempt + 1, e)
-            if attempt < _MAX_RETRIES:
-                time.sleep(_BACKOFF_SECONDS)
-            else:
-                logger.error("Agent exhausted retries, returning empty list")
-                return []
-
-    return []
-
-
-def _build_agent_input(brand_queries: list[str], date_from: str | None) -> str:
-    """Build the input message for the AI Studio agent."""
-    queries_str = ", ".join(brand_queries)
-    date_to = datetime.now().strftime("%Y-%m-%d")
-
-    if date_from:
-        date_range = f"с {date_from} по {date_to}"
-    else:
-        date_range = "за последние 2 недели"
-
-    return (
-        f"Найди все упоминания бренда DDVB (брендинговое агентство, Москва) "
-        f"в российских онлайн-СМИ, отраслевых порталах и бизнес-изданиях "
-        f"{date_range}.\n\n"
-        f"Ищи по запросам: {queries_str}\n\n"
-        f"Для каждого найденного упоминания определи:\n"
-        f"- Это РЕДАКЦИОННОЕ упоминание (статья, новость, кейс, рейтинг, обзор, аналитика)?\n"
-        f"- Или это шум (WHOIS, SEO-инструмент, каталог без редакционного контента, агрегатор)?\n\n"
-        f"Верни ТОЛЬКО редакционные упоминания в формате JSON:\n\n"
-        f"```json\n"
-        f'{{\n'
-        f'  "mentions": [\n'
-        f'    {{\n'
-        f'      "url": "полный URL страницы",\n'
-        f'      "title": "точный заголовок страницы",\n'
-        f'      "domain": "домен без www.",\n'
-        f'      "snippet": "ключевая цитата с упоминанием DDVB, 1-2 предложения",\n'
-        f'      "summary": "краткое описание контекста упоминания, 2-3 предложения"\n'
-        f'    }}\n'
-        f'  ]\n'
-        f'}}\n'
-        f"```\n\n"
-        f'Если упоминаний не найдено, верни: {{"mentions": []}}'
-    )
-
-
-def _parse_agent_response(output_text: str) -> list[dict]:
-    """
-    Parse the agent's response into a list of mention dicts.
-
-    Three-tier strategy:
-    1. Find ```json ... ``` code block and parse JSON
-    2. Find raw JSON object/array in text
-    3. Fallback: extract URLs with regex
-    """
-    if not output_text:
-        return []
-
-    # Tier 1: JSON code block
-    json_block = re.search(r"```json\s*(.*?)\s*```", output_text, re.DOTALL)
-    if json_block:
-        try:
-            data = json.loads(json_block.group(1))
-            mentions = data.get("mentions", data) if isinstance(data, dict) else data
-            if isinstance(mentions, list):
-                return [_normalize_mention(m) for m in mentions if isinstance(m, dict)]
-        except json.JSONDecodeError:
-            logger.warning("JSON code block found but failed to parse")
-
-    # Tier 2: Raw JSON object in text
-    json_match = re.search(r'\{[^{}]*"mentions"\s*:\s*\[.*?\]\s*\}', output_text, re.DOTALL)
-    if json_match:
-        try:
-            data = json.loads(json_match.group(0))
-            mentions = data.get("mentions", [])
-            if isinstance(mentions, list):
-                return [_normalize_mention(m) for m in mentions if isinstance(m, dict)]
-        except json.JSONDecodeError:
-            logger.warning("Raw JSON found but failed to parse")
-
-    # Tier 3: Extract URLs as fallback
-    logger.warning("No parseable JSON in agent response, falling back to URL extraction")
-    return _extract_urls_fallback(output_text)
-
-
-def _normalize_mention(m: dict) -> dict:
-    """Ensure a mention dict has all required fields with defaults."""
-    url = m.get("url", "")
-    domain = m.get("domain", "")
-    if not domain and url:
-        domain = urlparse(url).netloc
-    domain = domain.replace("www.", "")
-
-    return {
-        "url": url,
-        "title": m.get("title", ""),
-        "domain": domain,
-        "snippet": m.get("snippet", ""),
-        "summary": m.get("summary", ""),
-    }
-
-
-def _extract_urls_fallback(text: str) -> list[dict]:
-    """Extract http(s) URLs from free text and build minimal mention dicts."""
-    url_pattern = re.compile(r'https?://[^\s<>"\')\]]+')
-    urls = url_pattern.findall(text)
-
-    # Deduplicate while preserving order
-    seen = set()
-    mentions = []
-    for url in urls:
-        url = url.rstrip(".,;:)")
-        if url not in seen:
-            seen.add(url)
-            domain = urlparse(url).netloc.replace("www.", "")
-            mentions.append({
-                "url": url,
-                "title": "",
-                "domain": domain,
-                "snippet": "",
-                "summary": "",
-            })
-
-    return mentions
+    logger.info("Generative search total: %d mentions", len(all_mentions))
+    return all_mentions

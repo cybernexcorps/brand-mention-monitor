@@ -14,7 +14,6 @@ if sys.platform == "win32":
 from datetime import datetime, timedelta
 
 from config import (
-    AI_STUDIO_API_KEY,
     BLOCKED_DOMAINS,
     DEFAULT_EXCLUDE_DOMAINS,
     DEFAULT_RECIPIENTS,
@@ -92,18 +91,14 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
     existing_urls = get_existing_urls() if not dry_run else set()
     logger.info("Existing URLs in DB: %d", len(existing_urls))
 
-    # --- 3. AI Studio agent search (primary — search + classify + summarize) ---
+    # --- 3. AI Studio generative search (primary — search + AI analysis) ---
     date_from = (
         datetime.now() - timedelta(days=SEARCH_DATE_RESTRICT_DAYS)
     ).strftime("%Y-%m-%d")
 
-    agent_results: list[dict] = []
-    if AI_STUDIO_API_KEY:
-        logger.info("Stage 3: AI Studio agent search (date_from=%s)...", date_from)
-        agent_results = agent_search(search_queries, date_from=date_from)
-        logger.info("Agent found %d pre-classified mentions", len(agent_results))
-    else:
-        logger.warning("AI_STUDIO_API_KEY not set — skipping agent search")
+    logger.info("Stage 3: Generative search (date_from=%s)...", date_from)
+    agent_results = agent_search(search_queries, date_from=date_from)
+    logger.info("Generative search found %d mentions", len(agent_results))
 
     # --- 4. Search API v2 fallback (breadth — with date filter + pagination) ---
     logger.info("Stage 4: Search API v2 fallback...")

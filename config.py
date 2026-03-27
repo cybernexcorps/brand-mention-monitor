@@ -10,11 +10,8 @@ YC_API_KEY = os.environ["YC_API_KEY"]
 YC_FOLDER_ID = os.environ["YC_FOLDER_ID"]
 YC_BASE_URL = "https://llm.api.cloud.yandex.net/v1"
 
-# Yandex AI Studio (Responses API)
+# Yandex AI Studio (kept for reference — generative search uses YC_API_KEY directly)
 AI_STUDIO_API_KEY = os.getenv("AI_STUDIO_API_KEY", "")
-AI_STUDIO_BASE_URL = "https://ai.api.cloud.yandex.net/v1"
-AI_STUDIO_PROJECT_ID = "b1g6co0cfokq8k24mu7n"
-AI_STUDIO_AGENT_ID = "fvtv1l3pf21knmsk33to"
 
 # Models
 YANDEX_GPT_LITE = f"gpt://{YC_FOLDER_ID}/yandexgpt-lite/latest"
