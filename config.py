@@ -68,7 +68,7 @@ BLOCKED_DOMAINS = {
     # Portfolios / design aggregators — match "branding" tags, not DDVB specifically
     "behance.net", "referest.ru", "drive2.ru",
     # Award/directory pages that list many agencies without DDVB editorial content
-    "alladvertising.ru",
+    "alladvertising.ru", "workspace.ru",
 }
 
 # Social media — NOT blanket-blocked; agent classifies contextually.
