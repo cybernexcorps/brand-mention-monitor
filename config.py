@@ -67,8 +67,8 @@ BLOCKED_DOMAINS = {
     "ru.pinterest.com", "pinterest.com",
     # Portfolios / design aggregators — match "branding" tags, not DDVB specifically
     "behance.net", "referest.ru", "drive2.ru",
-    # Award/directory pages that list many agencies without DDVB editorial content
-    "alladvertising.ru", "workspace.ru",
+    # Note: workspace.ru, alladvertising.ru, ratingruneta.ru are NOT blocked —
+    # page verification step fetches the actual page and checks for DDVB mention
 }
 
 # Social media — NOT blanket-blocked; agent classifies contextually.

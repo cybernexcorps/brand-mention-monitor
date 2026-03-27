@@ -65,6 +65,29 @@ def _extract_publication_year(url: str, title: str, snippet: str) -> int | None:
     return None
 
 
+def _verify_page_mentions_brand(url: str, timeout: float = 10.0) -> bool:
+    """Fetch a URL and check if DDVB/ДДВБ appears in the page content."""
+    import httpx
+
+    try:
+        resp = httpx.get(
+            url,
+            timeout=timeout,
+            follow_redirects=True,
+            headers={"User-Agent": "DDVB-BrandMonitor/1.0"},
+        )
+        if resp.status_code != 200:
+            logger.debug("Page fetch failed (%d): %s", resp.status_code, url)
+            return True  # fail-open: don't reject on fetch errors
+
+        text = resp.text.lower()
+        return "ddvb" in text or "ддвб" in text
+
+    except Exception as e:
+        logger.debug("Page fetch error for %s: %s", url, e)
+        return True  # fail-open
+
+
 def _normalize_url(url: str) -> str:
     """Normalize URL for deduplication: strip trailing slash, query params, www."""
     url = url.rstrip("/").split("?")[0].split("#")[0]
@@ -247,7 +270,31 @@ def run_pipeline(dry_run: bool = False, verbose: bool = False) -> dict:
         len(all_results), before_year_filter - len(all_results),
     )
 
-    # --- 9. Classify remaining Search API results with YandexGPT ---
+    # --- 9. Page verification: fetch actual page and confirm DDVB is mentioned ---
+    # Search snippets can contain "DDVB" from Yandex context highlighting
+    # even when the actual page doesn't mention DDVB at all.
+    before_page_verify = len(all_results)
+    page_verified = []
+    for r in all_results:
+        if r.get("discovery_source") == "ai_studio_generative":
+            # Generative search already reads full page content
+            page_verified.append(r)
+            continue
+        url = r.get("url", "")
+        if _verify_page_mentions_brand(url):
+            page_verified.append(r)
+        else:
+            logger.info(
+                "Page verification FAILED: %s — %s",
+                r["domain"], r["title"][:60],
+            )
+    all_results = page_verified
+    logger.info(
+        "After page verification: %d (rejected %d)",
+        len(all_results), before_page_verify - len(all_results),
+    )
+
+    # --- 10. Classify remaining Search API results with YandexGPT ---
     logger.info("Classifying %d results...", len(all_results))
     relevant: list[dict] = []
     for r in all_results:
