@@ -63,6 +63,10 @@ BLOCKED_DOMAINS = {
     "report-abuse.com", "zavpro.travyanov.ru",
     # Visual/social platforms — show other agencies, not DDVB-specific editorial
     "ru.pinterest.com", "pinterest.com",
+    # Portfolios / design aggregators — match "branding" tags, not DDVB specifically
+    "behance.net", "referest.ru", "drive2.ru",
+    # Award/directory pages that list many agencies without DDVB editorial content
+    "alladvertising.ru",
 }
 
 # Social media — NOT blanket-blocked; agent classifies contextually.
