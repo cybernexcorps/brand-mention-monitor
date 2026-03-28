@@ -77,10 +77,15 @@ SOCIAL_MEDIA_DOMAINS = {
     "t.me", "vk.com", "ok.ru", "instagram.com", "facebook.com", "twitter.com",
 }
 
-# Email (SMTP)
+# Email (SMTP — Selectel relay for external recipients)
 SMTP_HOST = os.getenv("SMTP_HOST", "")
 SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
 SMTP_USER = os.getenv("SMTP_USER", "")
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")
 SMTP_FROM = os.getenv("SMTP_FROM", "agent@ddvb.tech")
-DEFAULT_RECIPIENTS = ["ilya@ddvb.tech", "maria@ddvb.tech"]
+
+# Direct SMTP for @ddvb.ru recipients (Selectel bounced-check filter blocks ddvb.ru)
+SMTP_DIRECT_HOST = os.getenv("SMTP_DIRECT_HOST", "mail.ddvb.ru")
+SMTP_DIRECT_PORT = int(os.getenv("SMTP_DIRECT_PORT", "25"))
+
+DEFAULT_RECIPIENTS = ["pr@ddvb.ru"]

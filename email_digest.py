@@ -6,7 +6,10 @@ from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 
-from config import SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM
+from config import (
+    SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASSWORD, SMTP_FROM,
+    SMTP_DIRECT_HOST, SMTP_DIRECT_PORT,
+)
 
 logger = logging.getLogger("brand-mention-monitor")
 
@@ -74,10 +77,33 @@ def _build_empty_html() -> str:
 </html>"""
 
 
+def _send_via_relay(msg_bytes: str, recipients: list[str]) -> None:
+    """Send via Selectel SMTP relay (external recipients)."""
+    with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
+        server.ehlo()
+        server.starttls()
+        server.ehlo()
+        if SMTP_USER and SMTP_PASSWORD:
+            server.login(SMTP_USER, SMTP_PASSWORD)
+        server.sendmail(SMTP_FROM, recipients, msg_bytes)
+
+
+def _send_direct(msg_bytes: str, recipients: list[str]) -> None:
+    """Send directly to mail.ddvb.ru (Synology NAS) for @ddvb.ru recipients."""
+    with smtplib.SMTP(SMTP_DIRECT_HOST, SMTP_DIRECT_PORT, timeout=30) as server:
+        server.ehlo()
+        try:
+            server.starttls()
+            server.ehlo()
+        except smtplib.SMTPNotSupportedError:
+            pass  # port 25 may not support STARTTLS
+        server.sendmail(SMTP_FROM, recipients, msg_bytes)
+
+
 def _send_email(subject: str, html_body: str, recipients: list[str]) -> bool:
-    """Send an HTML email via SMTP. Returns True on success."""
-    if not SMTP_HOST:
-        logger.warning("SMTP_HOST is not configured — skipping email send")
+    """Send an HTML email via SMTP. Routes @ddvb.ru directly, others via relay."""
+    if not SMTP_HOST and not SMTP_DIRECT_HOST:
+        logger.warning("No SMTP configured — skipping email send")
         return False
 
     msg = MIMEMultipart("alternative")
@@ -85,21 +111,33 @@ def _send_email(subject: str, html_body: str, recipients: list[str]) -> bool:
     msg["From"] = SMTP_FROM
     msg["To"] = ", ".join(recipients)
     msg.attach(MIMEText(html_body, "html", "utf-8"))
+    msg_bytes = msg.as_string()
 
+    # Split recipients by delivery route
+    direct = [r for r in recipients if r.endswith("@ddvb.ru")]
+    relay = [r for r in recipients if not r.endswith("@ddvb.ru")]
+
+    ok = True
     try:
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=30) as server:
-            server.ehlo()
-            server.starttls()
-            server.ehlo()
-            if SMTP_USER and SMTP_PASSWORD:
-                server.login(SMTP_USER, SMTP_PASSWORD)
-            server.sendmail(SMTP_FROM, recipients, msg.as_string())
-        logger.info("Email sent to %s", ", ".join(recipients))
-        return True
+        if direct and SMTP_DIRECT_HOST:
+            _send_direct(msg_bytes, direct)
+            logger.info("Email sent (direct) to %s", ", ".join(direct))
+        elif direct:
+            logger.warning("No SMTP_DIRECT_HOST — cannot deliver to %s", direct)
+            ok = False
+
+        if relay and SMTP_HOST:
+            _send_via_relay(msg_bytes, relay)
+            logger.info("Email sent (relay) to %s", ", ".join(relay))
+        elif relay:
+            logger.warning("No SMTP_HOST — cannot deliver to %s", relay)
+            ok = False
 
     except Exception as e:
         logger.error("Failed to send email: %s", e)
-        return False
+        ok = False
+
+    return ok
 
 
 def send_digest(mentions: list[dict], recipients: list[str]) -> bool:
